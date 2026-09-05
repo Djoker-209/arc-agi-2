@@ -98,9 +98,34 @@ def _infer_downscale_factors(train):
     return ratios.pop() if len(ratios) == 1 else None
 
 
+def _program_length(program):
+    """Rough Minimum-Description-Length proxy for a program (CompressARC-
+    style Occam's razor: shorter description = more likely correct).
+    Each op step costs 1 "instruction", plus extra bits for how much
+    information its parameters encode -- a recolor mapping with many
+    non-identity entries, or a large scale/tile factor, describes more
+    than a bare geometric flip, so it should rank behind a plain op that
+    fits equally well."""
+    cost = 0
+    for fn, kwargs in program:
+        cost += 1
+        if not kwargs:
+            continue
+        if "mapping" in kwargs:
+            cost += sum(1 for k, v in kwargs["mapping"].items() if k != v)
+        else:
+            # scale/tile/downscale etc.: larger factors encode more bits
+            for v in kwargs.values():
+                cost += max(0, v - 1)
+    return cost
+
+
 def search(train, max_depth=2, time_budget_ops=200_000):
     """Return a list of programs (each a list of (fn, kwargs) steps) that
-    exactly reproduce every train pair, ordered simplest-first."""
+    exactly reproduce every train pair, ranked simplest-first by MDL
+    (fewest/cheapest ops), matching CompressARC's Occam's-razor principle
+    that the shortest description of the data is the most likely correct
+    one."""
     found = []
     ops_tried = 0
 
@@ -132,6 +157,7 @@ def search(train, max_depth=2, time_budget_ops=200_000):
             found.append(prog)
 
     if found or max_depth < 2:
+        found.sort(key=_program_length)
         return found
 
     # depth 2: compose pairs of unary ops
@@ -143,6 +169,7 @@ def search(train, max_depth=2, time_budget_ops=200_000):
         if _try_program(program, train):
             found.append(program)
 
+    found.sort(key=_program_length)
     return found
 
 
@@ -188,4 +215,3 @@ if __name__ == "__main__":
             1 for gt, cands in zip(test_out, preds) if gt in cands
         )
         print(f"score: {correct}/{len(test_out)}")
-

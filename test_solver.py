@@ -93,5 +93,22 @@ train, test, gt = make_task(
 )
 results.append(check("crop_to_content", train, test, gt))
 
-print(f"\n{sum(results)}/{len(results)} synthetic tasks passed")
+# 7) MDL ranking: a task solvable by a bare unary op (cost 1) should rank
+# that ahead of a depth-2 composition that happens to also fit, even if
+# the search discovers the longer one first.
+train, test, gt = make_task(
+    pairs=[
+        ([[1, 2], [3, 4]], [[2, 1], [4, 3]]),  # flip_h alone fits
+        ([[5, 6], [7, 8]], [[6, 5], [8, 7]]),
+    ],
+    test_in=[[9, 0], [1, 2]],
+    test_out=[[0, 9], [2, 1]],
+)
+programs = search(train, max_depth=2)
+from solver import _program_length
+costs = [_program_length(p) for p in programs]
+ok = costs == sorted(costs) and costs[0] == 1
+print(f"[MDL ranking] program_costs={costs} {'PASS' if ok else 'FAIL'}")
+results.append(ok)
 
+print(f"\n{sum(results)}/{len(results)} synthetic tasks passed")
