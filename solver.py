@@ -173,6 +173,32 @@ def search(train, max_depth=2, time_budget_ops=200_000):
     return found
 
 
+def all_candidate_grids(train, test_input, max_depth=2, programs=None):
+    """Return every distinct output grid produced by a train-consistent
+    program on this one test input, MDL-ranked, uncapped at 2. Unlike
+    solve_task() (which picks its final 2 by MDL rank alone), this is
+    meant to be consumed by an external ranker -- e.g. trm/neuro_symbolic.py
+    scores each of these against TRM's predicted grid distribution, since
+    ARC-AGI-2 tasks are exactly the ones where several short programs fit
+    all train pairs but diverge on the test input, and MDL rank alone
+    can't tell them apart.
+
+    Pass a pre-computed `programs` list (from search()) to avoid re-running
+    the search when you already have it.
+    """
+    if programs is None:
+        programs = search(train, max_depth=max_depth)
+    candidates = []
+    for program in programs:
+        try:
+            out = _apply_program(program, test_input)
+        except Exception:
+            continue
+        if out not in candidates:
+            candidates.append(out)
+    return candidates, programs
+
+
 def solve_task(train, test_inputs, max_depth=2):
     """Return, for each test input, a list of up to 2 candidate output grids."""
     programs = search(train, max_depth=max_depth)

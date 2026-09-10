@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .DS_Store
 data/ARC-AGI-2-data/
+.venv/

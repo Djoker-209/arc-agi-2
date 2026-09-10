@@ -19,6 +19,8 @@ import json
 import time
 from pathlib import Path
 
+import numpy as np
+
 import dsl
 import solver
 import augment
@@ -32,7 +34,8 @@ def load_all_tasks(data_dir, limit=None):
     return paths
 
 
-def evaluate(data_dir, use_voting=False, limit=None, max_depth=2, verbose=False):
+def evaluate(data_dir, use_voting=False, limit=None, max_depth=2, verbose=False,
+             trm_checkpoint=None, trm_device="cpu"):
     paths = load_all_tasks(data_dir, limit)
     n_tasks = len(paths)
     n_solved_program = 0   # search found >=1 fitting program
@@ -42,6 +45,13 @@ def evaluate(data_dir, use_voting=False, limit=None, max_depth=2, verbose=False)
     n_sym_errors = 0       # symmetry_fill raised an exception
     failures = []
     start = time.time()
+
+    trm_runner = None
+    if trm_checkpoint is not None:
+        from trm.inference import TRMRunner
+        trm_runner = TRMRunner(checkpoint_path=trm_checkpoint, device=trm_device).load()
+        if verbose:
+            print(f"  Loaded TRM checkpoint from {trm_checkpoint} onto {trm_device}")
 
     for i, path in enumerate(paths):
         train, test_inputs, test_out = solver.load_task(str(path))
@@ -57,7 +67,22 @@ def evaluate(data_dir, use_voting=False, limit=None, max_depth=2, verbose=False)
                 print(f"  [{path.name}] symmetry_fill ERROR: {e}")
 
         try:
-            if use_voting:
+            if trm_runner is not None:
+                # Neuro-symbolic mode: DSL finds all train-consistent
+                # candidates, TRM's learned distribution disambiguates
+                # between them (or supplies a fallback when the DSL
+                # finds none). See trm/neuro_symbolic.py for the rationale.
+                from trm.neuro_symbolic import select_two_attempts
+                programs = solver.search(train, max_depth=max_depth)
+                if programs:
+                    n_solved_program += 1
+                preds = []
+                for grid in test_inputs:
+                    dsl_candidates, _ = solver.all_candidate_grids(train, grid, programs=programs)
+                    logits = trm_runner.predict_logits(np.array(grid))
+                    attempts = select_two_attempts(dsl_candidates, logits)
+                    preds.append([a.tolist() for a in attempts])
+            elif use_voting:
                 preds, _ = augment.solve_with_voting(train, test_inputs, max_depth=max_depth)
             else:
                 preds, programs = solver.solve_task(train, test_inputs, max_depth=max_depth)
@@ -111,12 +136,18 @@ if __name__ == "__main__":
                      help="Only evaluate the first N tasks (useful for a quick check)")
     ap.add_argument("--max-depth", type=int, default=2)
     ap.add_argument("--quiet", action="store_true", help="Suppress progress output")
+    ap.add_argument("--trm-checkpoint", default=None,
+                     help="Path to a TRM checkpoint (.pt state_dict). When set, uses the "
+                          "neuro-symbolic ranker (trm/neuro_symbolic.py) instead of plain "
+                          "DSL search or voting -- overrides --voting.")
+    ap.add_argument("--trm-device", default="cpu", help="cpu or cuda")
     args = ap.parse_args()
 
-    print(f"Evaluating {'voting' if args.voting else 'plain search'} solver "
-          f"on {args.data_dir} (max_depth={args.max_depth})...")
+    mode = "TRM neuro-symbolic" if args.trm_checkpoint else ("voting" if args.voting else "plain search")
+    print(f"Evaluating {mode} solver on {args.data_dir} (max_depth={args.max_depth})...")
     results = evaluate(args.data_dir, use_voting=args.voting, limit=args.limit,
-                        max_depth=args.max_depth, verbose=not args.quiet)
+                        max_depth=args.max_depth, verbose=not args.quiet,
+                        trm_checkpoint=args.trm_checkpoint, trm_device=args.trm_device)
 
     print()
     print(f"Tasks evaluated:      {results['n_tasks']}")
