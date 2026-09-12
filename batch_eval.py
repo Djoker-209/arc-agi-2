@@ -35,7 +35,7 @@ def load_all_tasks(data_dir, limit=None):
 
 
 def evaluate(data_dir, use_voting=False, limit=None, max_depth=2, verbose=False,
-             trm_checkpoint=None, trm_device="cpu"):
+             trm_checkpoint=None, trm_device="cpu", trm_ttt_steps=200, trm_ttt_lr=1e-2):
     paths = load_all_tasks(data_dir, limit)
     n_tasks = len(paths)
     n_solved_program = 0   # search found >=1 fitting program
@@ -73,13 +73,20 @@ def evaluate(data_dir, use_voting=False, limit=None, max_depth=2, verbose=False,
                 # between them (or supplies a fallback when the DSL
                 # finds none). See trm/neuro_symbolic.py for the rationale.
                 from trm.neuro_symbolic import select_two_attempts
+                from trm.test_time_adapt import adapt_and_predict
                 programs = solver.search(train, max_depth=max_depth)
                 if programs:
                     n_solved_program += 1
+                # Adapt once per task (uses the task's own train pairs),
+                # not once per test input -- test_time_adapt.py trains a
+                # fresh puzzle embedding for this task, which is shared
+                # across all of the task's test inputs.
+                train_np = [(np.array(i), np.array(o)) for i, o in train]
                 preds = []
                 for grid in test_inputs:
                     dsl_candidates, _ = solver.all_candidate_grids(train, grid, programs=programs)
-                    logits = trm_runner.predict_logits(np.array(grid))
+                    logits = adapt_and_predict(trm_runner, train_np, np.array(grid),
+                                                num_steps=trm_ttt_steps, lr=trm_ttt_lr)
                     attempts = select_two_attempts(dsl_candidates, logits)
                     preds.append([a.tolist() for a in attempts])
             elif use_voting:
@@ -141,13 +148,17 @@ if __name__ == "__main__":
                           "neuro-symbolic ranker (trm/neuro_symbolic.py) instead of plain "
                           "DSL search or voting -- overrides --voting.")
     ap.add_argument("--trm-device", default="cpu", help="cpu or cuda")
+    ap.add_argument("--trm-ttt-steps", type=int, default=200,
+                     help="Adam steps for per-task puzzle-embedding adaptation (test_time_adapt.py)")
+    ap.add_argument("--trm-ttt-lr", type=float, default=1e-2)
     args = ap.parse_args()
 
     mode = "TRM neuro-symbolic" if args.trm_checkpoint else ("voting" if args.voting else "plain search")
     print(f"Evaluating {mode} solver on {args.data_dir} (max_depth={args.max_depth})...")
     results = evaluate(args.data_dir, use_voting=args.voting, limit=args.limit,
                         max_depth=args.max_depth, verbose=not args.quiet,
-                        trm_checkpoint=args.trm_checkpoint, trm_device=args.trm_device)
+                        trm_checkpoint=args.trm_checkpoint, trm_device=args.trm_device,
+                        trm_ttt_steps=args.trm_ttt_steps, trm_ttt_lr=args.trm_ttt_lr)
 
     print()
     print(f"Tasks evaluated:      {results['n_tasks']}")

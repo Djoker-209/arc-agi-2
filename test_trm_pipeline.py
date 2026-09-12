@@ -84,3 +84,43 @@ check("e2e_correct_shape", attempts[0].shape == (2, 2))
 check("e2e_correct_answer_present", any(np.array_equal(a, [[0, 9], [2, 1]]) for a in attempts))
 
 print(f"\n{sum(results)}/{len(results)} TRM pipeline checks passed")
+
+# --- test_time_adapt.py: verify the adaptation loop's plumbing is
+# correct (loss decreases, shapes are right). NOT a convergence/accuracy
+# check -- with the reasoning layers randomly initialized (no real
+# checkpoint available in this sandbox), there's no reason to expect
+# exact-match convergence; that's expected to improve substantially once
+# real pretrained weights are loaded, since only the embedding is random
+# in that case, not the whole network.
+print()
+from trm.test_time_adapt import LearnablePuzzleEmbedding
+import torch
+
+model2 = TRMRunner(config=TINY_CONFIG).load().model
+train_pairs = [(np.array([[1, 2], [3, 4]]), np.array([[2, 1], [4, 3]])),
+               (np.array([[5, 6], [7, 8]]), np.array([[6, 5], [8, 7]]))]
+model2.inner.puzzle_emb = LearnablePuzzleEmbedding(model2.config.puzzle_emb_ndim)
+for p in model2.parameters():
+    p.requires_grad = False
+for p in model2.inner.puzzle_emb.parameters():
+    p.requires_grad = True
+opt = torch.optim.Adam(model2.inner.puzzle_emb.parameters(), lr=0.02)
+inputs = torch.from_numpy(np.stack([encode_grid(i) for i, o in train_pairs])).long()
+targets = torch.from_numpy(np.stack([encode_grid(o) for i, o in train_pairs])).long()
+model2.train()
+losses = []
+for _ in range(15):
+    batch = {"inputs": inputs, "puzzle_identifiers": torch.zeros(2, dtype=torch.long)}
+    carry = model2.initial_carry(batch)
+    opt.zero_grad()
+    carry, outputs = model2(carry, batch)
+    loss = torch.nn.functional.cross_entropy(
+        outputs["logits"].reshape(-1, outputs["logits"].shape[-1]), targets.reshape(-1))
+    loss.backward()
+    opt.step()
+    losses.append(loss.item())
+check("ttt_loss_decreases", losses[-1] < losses[0])
+check("ttt_only_embedding_has_grad", model2.inner.puzzle_emb.weight.requires_grad
+      and not next(model2.inner.L_level.parameters()).requires_grad)
+
+print(f"\n{sum(results)}/{len(results)} total checks passed")
