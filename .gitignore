@@ -5,3 +5,5 @@ __pycache__/
 data/ARC-AGI-2-data/
 .venv/
 kaggle.json
+trm_checkpoint/
+*.zip
